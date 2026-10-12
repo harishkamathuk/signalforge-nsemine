@@ -33,12 +33,14 @@ CI includes a separate installation/import smoke test. Do not run live NSE reque
 as an unlabelled part of the offline suite.
 
 ## Upstream synchronisation
-Inspect upstream changes before adopting them.
+Inspect upstream changes before adopting them. The triple-dot diff below shows changes on upstream since the common ancestor; it is **not** a complete comparison of the fork and upstream branch tips.
 
 ```bash
 git fetch upstream
 git log --oneline develop..upstream/main
-git diff develop...upstream/main
+git diff develop...upstream/main  # incoming upstream changes since merge base
+git log --oneline upstream/main..develop  # commits unique to the fork
+git diff upstream/main..develop  # full differences between both branch tips
 ```
 
 Integrate approved changes through a review branch/PR into `develop`.
