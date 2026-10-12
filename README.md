@@ -1,3 +1,5 @@
+> **SignalForge-maintained fork:** This repository is [harishkamathuk/signalforge-nsemine](https://github.com/harishkamathuk/signalforge-nsemine), derived from [kbizme/nsemine](https://github.com/kbizme/nsemine). The upstream library's Python distribution and import remain `nsemine`. This README preserves upstream API usage and examples; fork-specific installation, contribution, release and test guidance lives in [Fork Maintenance](docs/fork-maintenance.md). For working changes, use feature/chore branches targeting `develop`, not `main`.
+
 # ⚡ nsemine
 
 ## **High-Performance, Asynchronous Python Interface for NSEIndia & NiftyIndices Websites.**
