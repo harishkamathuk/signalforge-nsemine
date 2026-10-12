@@ -37,7 +37,23 @@ jobs:
           else
             git diff --check HEAD^..HEAD
           fi
-      - name: Ruff (new smoke test only; upstream legacy baseline deferred)
-        run: ruff check tests/test_package_smoke.py --select E4,E7,E9,F
+      - name: Ruff on changed Python files (legacy baseline deferred)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            DIFF_BASE="$BASE_SHA"
+            RANGE="$DIFF_BASE...HEAD"
+          else
+            RANGE="HEAD^..HEAD"
+          fi
+          # NUL-delimited names handle whitespace; exclude deletions and renames' old paths.
+          mapfile -d '' -t files < <(git diff --diff-filter=ACMR --name-only -z "$RANGE" -- '*.py')
+          if [ "${#files[@]}" -gt 0 ]; then
+            printf 'Linting %s changed Python file(s)\n' "${#files[@]}"
+            ruff check --select E4,E7,E9,F -- "${files[@]}"
+          else
+            echo "No changed Python files to lint"
+          fi
       - name: Offline unit and import tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
