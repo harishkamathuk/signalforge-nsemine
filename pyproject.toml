@@ -36,6 +36,7 @@ dependencies = [
     "aiohttp",
     "asyncio",
     "curl_cffi",
+    "requests",
     "numpy",
     "pandas",
     "nest_asyncio",
