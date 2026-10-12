@@ -98,13 +98,13 @@ class NSEHTTPInteractionTests(unittest.TestCase):
     def test_symbol_lookup_uses_mock_nse_response(self):
         payload = {"data": [{"symbol": "BAJAJ-AUTO-EQ", "scripcode": 16669, "type": "Equity", "description": "BAJAJ AUTO"}]}
         with patch.object(historical.scraper, "get_request", return_value=response(data=payload)) as fetch:
-            result = historical.__get_script_token("BAJAJ-AUTO")
+            result = getattr(historical, "__get_script_token")("BAJAJ-AUTO")
         self.assertEqual(result, ("BAJAJ-AUTO", 16669, "Equity"))
         self.assertEqual(fetch.call_args.kwargs["url"], urls.search_token_url)
 
     def test_symbol_lookup_unavailable_returns_none(self):
         with patch.object(historical.scraper, "get_request", return_value=None):
-            self.assertIsNone(historical.__get_script_token("BAJAJ-AUTO"))
+            self.assertIsNone(getattr(historical, "__get_script_token")("BAJAJ-AUTO"))
 
     def test_historical_1m_and_5m_request_params(self):
         sample = {"status": "ok", "data": [{"time": 1750000000000, "open": 100, "high": 102, "low": 99, "close": 101, "volume": 10}]}
