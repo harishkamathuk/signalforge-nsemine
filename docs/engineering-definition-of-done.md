@@ -23,6 +23,8 @@ Issue-specific acceptance criteria remain authoritative.
 - Install package on the supported development version (initially Python 3.12).
 - Run applicable offline regression tests and check changed-file formatting.
 - Confirm final PR CI is green and its checks cover actual tests rather than reporting empty discovery.
+- The initial integration baseline may only import the package; it does **not** verify NSE response parsing, session recovery, historical 1m/5m OHLCV, or live acquisition. For any behavioural PR, add focused offline tests for the changed paths, plus independently recorded live NSE validation when connectivity is material.
+- Apply changed-Python-file Ruff checks for PRs and pushed commits while avoiding unrelated upstream lint debt; new findings in changed files must be addressed.
 - For network behaviour, record versions, symbol, endpoint, bounded date range, repeated acquisitions and response classification.
 - Distinguish a successful mocked response from successful **live** NSE acquisition.
 - Review risks to public API compatibility, time interpretation, provider semantics and runtime security.
