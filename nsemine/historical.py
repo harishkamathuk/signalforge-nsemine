@@ -229,7 +229,7 @@ def __get_script_token(symbol: str,
         type = x.iloc[0]['type']
         return symbol, token, type
     
-    except Exception as e:
+    except Exception:
         print(f'Could not find the token for the given symbol: {symbol}')
         return None
     
