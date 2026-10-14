@@ -157,14 +157,11 @@ def _chart_bound_wall_time(value: datetime | int) -> pd.Timestamp:
     return stamp
 
 
-def _validated_intraday_open_labels(
-    raw_times: pd.Series, minutes: int,
-    start_datetime: datetime | int, end_datetime: datetime | int,
-) -> pd.Series:
-    """Validate every provider timestamp before returning NSE-local opening labels.
+def _validated_intraday_open_labels(raw_times: pd.Series, minutes: int) -> pd.Series:
+    """Validate raw chart clock shape before any deliberate boundary filtering.
 
-    Chart milliseconds are a provider wall-clock encoding, NOT UTC instants.
-    Bucket membership does not establish provider candle completion.
+    NSE's observed chart clock is NSE-local wall time encoded like UTC; it is
+    not a verified UTC instant and bucket membership does not prove completion.
     """
     if minutes not in (1, 5):
         raise ValueError("Validated timestamp decoding supports only 1m and 5m")
@@ -178,30 +175,16 @@ def _validated_intraday_open_labels(
     if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
         raise ValueError("Duplicate or unordered raw intraday timestamps")
     opening = timestamps.dt.floor(f'{minutes}min')
-    final_minute = opening + pd.Timedelta(minutes=minutes - 1)
-    if not (timestamps.dt.floor('min') == final_minute).all():
+    if not (timestamps.dt.floor('min') ==
+            opening + pd.Timedelta(minutes=minutes - 1)).all():
         raise ValueError("Intraday timestamp outside final candle minute")
     if opening.duplicated().any():
         raise ValueError("Duplicate intraday opening candle labels")
-    # This path serves a regular-session request. Do not silently discard
-    # records that are not inside the NSE session.
-    session_start = datetime.strptime('09:15', '%H:%M').time()
-    session_end = datetime.strptime('15:30', '%H:%M').time()
-    if not ((opening.dt.time >= session_start) &
-            ((opening + pd.Timedelta(minutes=minutes)).dt.time <= session_end)).all():
-        raise ValueError("Unexpected out-of-session intraday candle")
-    request_start = _chart_bound_wall_time(start_datetime)
-    request_end = _chart_bound_wall_time(end_datetime)
-    if request_end <= request_start:
-        raise ValueError("Invalid historical request window")
-    if not ((opening >= request_start) &
-            (opening + pd.Timedelta(minutes=minutes) <= request_end)).all():
-        raise ValueError("Intraday candle outside requested date/time window")
     return opening
 
 
 def _validate_intraday_ohlcv(df: pd.DataFrame) -> None:
-    """Reject impossible candle values; this does not prove source accuracy."""
+    """Reject impossible OHLCV, without changing the public column dtypes."""
     numeric = df[['open', 'high', 'low', 'close', 'volume']].apply(
         pd.to_numeric, errors='raise'
     )
@@ -210,6 +193,8 @@ def _validate_intraday_ohlcv(df: pd.DataFrame) -> None:
     prices = numeric[['open', 'high', 'low', 'close']]
     if (prices <= 0).any().any() or (numeric['volume'] < 0).any():
         raise ValueError("Invalid intraday price or volume")
+    if (numeric['volume'] % 1 != 0).any():
+        raise ValueError("Intraday volume must be integral")
     if ((numeric['high'] < prices[['open', 'close', 'low']].max(axis=1)) |
             (numeric['low'] > prices[['open', 'close', 'high']].min(axis=1))).any():
         raise ValueError("Inconsistent intraday OHLC")
@@ -223,12 +208,51 @@ def process_historical_chart_response(df: pd.DataFrame, interval: str, start_dat
         return df
 
     if str(interval) in ('1', '5'):
-        # Validate all response rows BEFORE any session filtering.
-        df['datetime'] = _validated_intraday_open_labels(
-            df['datetime'], int(interval), start_datetime, end_datetime
+        minutes = int(interval)
+        openings = _validated_intraday_open_labels(df['datetime'], minutes)
+        # All raw rows have already passed shape/order checks. Retain legacy
+        # exclusion of pre/post-market records only when there are valid
+        # requested-session candles; otherwise fail closed.
+        session_start = datetime.strptime('09:15', '%H:%M').time()
+        session_end = datetime.strptime('15:30', '%H:%M').time()
+        in_session = ((openings.dt.time >= session_start) &
+                      ((openings + pd.Timedelta(minutes=minutes)).dt.time <= session_end))
+        start = _chart_bound_wall_time(start_datetime)
+        end = _chart_bound_wall_time(end_datetime)
+        if end <= start:
+            raise ValueError("Invalid historical request window")
+        # Completely unrelated dates/windows are never trimmed as boundaries.
+        overlaps_window = (openings < end) & (
+            openings + pd.Timedelta(minutes=minutes) > start
         )
+        if not (in_session & overlaps_window).any():
+            raise ValueError("No intraday candles overlap requested regular session")
+        if (~in_session).any():
+            import warnings
+            warnings.warn(
+                f"Excluded {(~in_session).sum()} pre/post-market chart rows",
+                RuntimeWarning, stacklevel=2,
+            )
+        # Boundary-overlapping candles are not complete within the caller's
+        # window. Discard them explicitly rather than rejecting interior bars.
+        inside = (openings >= start) & (
+            openings + pd.Timedelta(minutes=minutes) <= end
+        )
+        if not (in_session & inside).any():
+            raise ValueError("No complete intraday candle in requested window")
+        discarded_boundary = (in_session & ~inside).sum()
+        if discarded_boundary:
+            import warnings
+            warnings.warn(
+                f"Excluded {discarded_boundary} chart rows outside complete requested buckets",
+                RuntimeWarning, stacklevel=2,
+            )
+        selected = in_session & inside
+        df = df.loc[selected].copy()
+        df['datetime'] = openings.loc[selected]
         _validate_intraday_ohlcv(df)
         return df
+
 
     # Existing behaviour for unqualified intervals; do not silently invent
     # a provider timestamp specification under SF-081.
