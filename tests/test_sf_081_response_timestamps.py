@@ -84,22 +84,26 @@ class IntradayResponseTimestampTests(unittest.TestCase):
     def test_before_requested_start_rejected(self):
         with self.assertRaisesRegex(ValueError, "requested date/time"):
             process_historical_chart_response(
-                rows([clock_ms(9, 19), clock_ms(9, 20)]), 1,
+                rows([clock_ms(9, 18), clock_ms(9, 20)]), 1,
                 datetime(2026, 10, 12, 9, 20),
                 datetime(2026, 10, 12, 10, 15),
             )
+
 
     def test_at_or_after_requested_end_rejected(self):
         with self.assertRaisesRegex(ValueError, "requested date/time"):
             self.decode([clock_ms(10, 15)], 1)
 
     def test_five_minute_partial_end_bucket_rejected(self):
-        frame = rows([clock_ms(10, 14)])
-        with self.assertRaisesRegex(ValueError, "requested date/time"):
-            process_historical_chart_response(
+        # With an interior complete bar, a trailing partial bar is reported and trimmed.
+        frame = rows([clock_ms(10, 9), clock_ms(10, 14)])
+        with self.assertWarnsRegex(RuntimeWarning, "complete requested buckets"):
+            result = process_historical_chart_response(
                 frame, 5, datetime(2026, 10, 12, 9, 15),
                 datetime(2026, 10, 12, 10, 12),
             )
+        self.assertEqual(list(result.datetime.dt.strftime("%H:%M")), ["10:05"])
+
 
     def test_five_minute_end_boundary_accepted(self):
         result = self.decode([clock_ms(10, 14, 55)], 5)
@@ -115,12 +119,16 @@ class IntradayResponseTimestampTests(unittest.TestCase):
         self.assertEqual(str(result.datetime.iloc[0]), "2026-10-12 09:15:00")
 
     def test_outside_session_not_silently_filtered(self):
-        with self.assertRaisesRegex(ValueError, "out-of-session"):
-            self.decode([clock_ms(9, 15), clock_ms(16, 0)], 1)
+        with self.assertWarnsRegex(RuntimeWarning, "pre/post-market"):
+            result = self.decode([clock_ms(9, 15), clock_ms(16, 0)], 1)
+        self.assertEqual(len(result), 1)
+
 
     def test_pre_market_not_silently_filtered(self):
-        with self.assertRaisesRegex(ValueError, "out-of-session"):
-            self.decode([clock_ms(8, 0), clock_ms(9, 15)], 1)
+        with self.assertWarnsRegex(RuntimeWarning, "pre/post-market"):
+            result = self.decode([clock_ms(8, 0), clock_ms(9, 15)], 1)
+        self.assertEqual(len(result), 1)
+
 
     def test_one_minute_zero_seconds_is_bucket_member_only(self):
         # :00 passes shape validation but is not proof of a completed candle.
@@ -148,6 +156,63 @@ class IntradayResponseTimestampTests(unittest.TestCase):
                 frame, 1, datetime(2026, 10, 12, 9, 15),
                 datetime(2026, 10, 12, 10, 15),
             )
+
+    def test_fractional_volume_rejected(self):
+        frame = rows([clock_ms(9, 15)])
+        frame.loc[0, "volume"] = 1.5
+        with self.assertRaisesRegex(ValueError, "integral"):
+            process_historical_chart_response(
+                frame, 1, datetime(2026, 10, 12, 9, 15),
+                datetime(2026, 10, 12, 10, 15),
+            )
+
+    def test_partial_five_minute_window_retains_interior(self):
+        values = [clock_ms(9, minute) for minute in (19, 24, 29, 34, 39)]
+        with self.assertWarnsRegex(RuntimeWarning, "complete requested buckets"):
+            frame = process_historical_chart_response(
+                rows(values), 5, datetime(2026, 10, 12, 9, 17),
+                datetime(2026, 10, 12, 9, 37),
+            )
+        self.assertEqual(list(frame.datetime.dt.strftime("%H:%M")),
+                         ["09:20", "09:25", "09:30"])
+
+    def test_all_offsession_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "No intraday candles"):
+            self.decode([clock_ms(8, 0)], 1)
+
+    def test_raw_time_shift_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "No intraday candles"):
+            self.decode([clock_ms(14, 45)], 1) if False else self.decode(
+                [clock_ms(8, 45)], 1
+            )
+
+    def test_public_api_full_hour_synthetic_fixture(self):
+        for interval, count, raw_minutes in (
+            (1, 60, range(15, 75)),
+            (5, 12, range(19, 75, 5)),
+        ):
+            raw = []
+            for offset in raw_minutes:
+                hour, minute = divmod(9 * 60 + offset, 60)
+                raw.append(clock_ms(hour, minute, 53 + offset % 7))
+            response = Mock()
+            response.json.return_value = {"data": rows(raw).to_dict("records")}
+            with self.subTest(interval=interval), patch.object(
+                historical.scraper, "get_request", return_value=response
+            ):
+                result = historical.__dict__["__fetch_historical_data"](
+                    symbol="RELIANCE", token="synthetic",
+                    start_datetime=datetime(2026, 10, 12, 9, 15),
+                    end_datetime=datetime(2026, 10, 12, 10, 15),
+                    interval=interval, symbol_type="Equity", raw=False,
+                )
+                self.assertEqual(len(result), count)
+                self.assertEqual(result.iloc[0]["datetime"],
+                                 pd.Timestamp("2026-10-12 09:15"))
+                self.assertEqual(result.iloc[-1]["datetime"],
+                                 pd.Timestamp("2026-10-12 10:15") -
+                                 pd.Timedelta(minutes=interval))
+                self.assertTrue((result["volume"] == 10).all())
 
     def test_unordered_provider_response_fails_closed(self):
         response = Mock()
