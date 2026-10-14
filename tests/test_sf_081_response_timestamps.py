@@ -182,9 +182,7 @@ class IntradayResponseTimestampTests(unittest.TestCase):
 
     def test_raw_time_shift_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "No intraday candles"):
-            self.decode([clock_ms(14, 45)], 1) if False else self.decode(
-                [clock_ms(8, 45)], 1
-            )
+            self.decode([clock_ms(8, 45)], 1)
 
     def test_public_api_full_hour_synthetic_fixture(self):
         for interval, count, raw_minutes in (
