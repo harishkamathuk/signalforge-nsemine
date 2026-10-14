@@ -1,8 +1,30 @@
 from nsemine.bin import scraper, header
 from nsemine.utilities import urls, utils
-from datetime import datetime
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 import pandas as pd
 import traceback
+
+
+_NSE_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def _intraday_chart_epoch(value: datetime) -> int:
+    """Encode an NSE local wall time independent of the machine's timezone.
+
+    The chart endpoint has historically been called with an IST wall-clock value
+    represented as Unix-shaped seconds (09:15 IST -> 09:15 UTC-shaped seconds).
+    This helper preserves that existing wire convention while removing the
+    dependency on naive datetime.timestamp() and the host process timezone.
+    Provider response timestamps remain subject to SF-081 verification.
+    """
+    if not isinstance(value, datetime):
+        raise TypeError("Historical bounds must be datetime instances")
+    if value.tzinfo is None or value.utcoffset() is None:
+        local = value  # Existing naive API inputs mean NSE local wall time.
+    else:
+        local = value.astimezone(_NSE_TIMEZONE)
+    return int(local.replace(tzinfo=UTC).timestamp())
 
 
 
@@ -123,7 +145,6 @@ def __fetch_historical_data(symbol: str,
                            raw: bool = False,
                            ):
     try:
-        IST_OFFSET_SECONDS = 5 * 3600 + 30 * 60  # 19800
         chart_type = 'I'
         time_interval = 1
         
@@ -132,8 +153,8 @@ def __fetch_historical_data(symbol: str,
             end_datetime = int(end_datetime.timestamp())
             chart_type = interval
         else:
-            start_datetime = int(start_datetime.timestamp()) + IST_OFFSET_SECONDS
-            end_datetime = int(end_datetime.timestamp()) + IST_OFFSET_SECONDS
+            start_datetime = _intraday_chart_epoch(start_datetime)
+            end_datetime = _intraday_chart_epoch(end_datetime)
             time_interval =  int(interval)
 
         # preparing the payload
