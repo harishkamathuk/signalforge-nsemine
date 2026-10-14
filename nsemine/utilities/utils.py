@@ -120,7 +120,7 @@ def process_aud(df:pd.DataFrame) -> pd.DataFrame:
         df['traded_value_cr'] = np.round(df['traded_value_cr'], 2)
         df['volume'] = np.int64(df['volume'] * 1_00000)
         return df
-    except:
+    except Exception:
         return df
 
 
@@ -216,7 +216,7 @@ def process_movers_data(data):
                         'prev_price': 'previous_close', 'perChange': 'changepct', 'trade_quantity': 'volume'}, inplace=True)
         df['turnover'] = round(df['turnover'] * 1_00_000, 2)
         return df
-    except:
+    except Exception:
         return data
     
 
