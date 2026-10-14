@@ -159,7 +159,7 @@ class IntradayResponseTimestampTests(unittest.TestCase):
 
     def test_fractional_volume_rejected(self):
         frame = rows([clock_ms(9, 15)])
-        frame.loc[0, "volume"] = 1.5
+        frame["volume"] = pd.Series([1.5], dtype=float)
         with self.assertRaisesRegex(ValueError, "integral"):
             process_historical_chart_response(
                 frame, 1, datetime(2026, 10, 12, 9, 15),
