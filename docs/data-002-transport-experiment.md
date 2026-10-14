@@ -35,3 +35,26 @@ it to `curl_cffi`. Unsupported values are rejected.
   bootstrap, symbol and history tests.
 - An async transport alternative would require separate evidence and scope.
 - Never commit NSE cookies or authentication material to the repository.
+
+## Live verification — WSL2, 14 October 2026
+
+The owner tested this fork at commit `1ca0e733` on Python 3.12.3,
+WSL2 Linux 6.6.87.2, `curl_cffi` 0.16.3, `requests` 2.34.2 and pandas 3.0.6.
+Both transports bootstrapped NSE successfully and returned HTTP 200 with
+20 symbol matches for RELIANCE. Under the explicitly diagnostic process setting
+`TZ=Asia/Kolkata`, both returned 60 one-minute candles for the historical
+09:15–10:15 IST window on 12 October 2026 (matching summary metrics).
+Both returned 12 five-minute candles, with full timestamp/OHLCV DataFrame
+comparison passing. Five repeated acquisitions per transport were all
+successful and equivalent. See the [recorded live-test evidence](https://github.com/harishkamathuk/signalforge-nsemine/pull/1#issuecomment-6167792048).
+
+These results demonstrate **functional compatibility for this bounded case**,
+not that the alternative backend is more reliable: the original intermittent
+`curl (35)` failure did not reproduce, and longer-run comparisons were not made.
+
+**Separate data-contract defect:** The existing historical API uses naive
+`datetime.timestamp()` followed by a fixed IST offset; the same intended
+09:15–10:15 request retrieved a 13:45–14:44 window under `Europe/London`.
+The `TZ` setting above was a diagnostic, **not a general production workaround**.
+Timestamp semantics must be resolved through SignalForge's historical-data
+contract independently of DATA-002. No timestamp conversion is changed here.
