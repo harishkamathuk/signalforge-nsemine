@@ -183,6 +183,8 @@ def process_historical_chart_response(df: pd.DataFrame, interval: str, start_dat
         return df
 
     if str(interval) in ('1', '5'):
+        if df.empty or df['datetime'].isna().any():
+            raise ValueError('Missing intraday timestamps')
         # This is a consciously bounded contract: other intervals have not
         # been source-qualified and retain the pre-existing conversion.
         df = remove_pre_and_post_market_prices_from_df(df=df)
