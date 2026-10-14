@@ -33,7 +33,8 @@ class EvidenceTests(unittest.TestCase):
         base = {"method": "POST", "parameters": {"interval": 1}}
         with tempfile.TemporaryDirectory() as directory:
             for endpoint in ("https://example.com/history?api_key=secret123",
-                             "https://user:password@example.com/history"):
+                             "https://user:password@example.com/history",
+                             "https://example.com/secret123"):
                 with self.assertRaises(ValueError):
                     harness.build_evidence(
                         {**base, "endpoint": endpoint}, {"status_code": 200},
