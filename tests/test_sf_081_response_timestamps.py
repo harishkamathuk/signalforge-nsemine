@@ -71,6 +71,80 @@ class IntradayResponseTimestampTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing"):
             self.decode([], 1)
 
+    def test_wrong_date_rejected(self):
+        next_day = clock_ms(9, 15) + 86_400_000
+        with self.assertRaisesRegex(ValueError, "requested date/time"):
+            self.decode([next_day], 1)
+
+    def test_previous_date_rejected(self):
+        prior = clock_ms(9, 15) - 86_400_000
+        with self.assertRaisesRegex(ValueError, "requested date/time"):
+            self.decode([prior], 1)
+
+    def test_before_requested_start_rejected(self):
+        with self.assertRaisesRegex(ValueError, "requested date/time"):
+            self.decode([clock_ms(9, 14), clock_ms(9, 15)], 1)
+
+    def test_at_or_after_requested_end_rejected(self):
+        with self.assertRaisesRegex(ValueError, "requested date/time"):
+            self.decode([clock_ms(10, 15)], 1)
+
+    def test_five_minute_partial_end_bucket_rejected(self):
+        frame = rows([clock_ms(10, 14)])
+        with self.assertRaisesRegex(ValueError, "requested date/time"):
+            process_historical_chart_response(
+                frame, 5, datetime(2026, 10, 12, 9, 15),
+                datetime(2026, 10, 12, 10, 12),
+            )
+
+    def test_five_minute_end_boundary_accepted(self):
+        result = self.decode([clock_ms(10, 14, 55)], 5)
+        self.assertEqual(str(result.datetime.iloc[0]), "2026-10-12 10:10:00")
+
+    def test_encoded_wire_request_bounds_supported(self):
+        frame = rows([clock_ms(9, 19)])
+        result = process_historical_chart_response(
+            frame, 5,
+            int(datetime(2026, 10, 12, 9, 15, tzinfo=UTC).timestamp()),
+            int(datetime(2026, 10, 12, 10, 15, tzinfo=UTC).timestamp()),
+        )
+        self.assertEqual(str(result.datetime.iloc[0]), "2026-10-12 09:15:00")
+
+    def test_outside_session_not_silently_filtered(self):
+        with self.assertRaisesRegex(ValueError, "out-of-session"):
+            self.decode([clock_ms(9, 15), clock_ms(16, 0)], 1)
+
+    def test_pre_market_not_silently_filtered(self):
+        with self.assertRaisesRegex(ValueError, "out-of-session"):
+            self.decode([clock_ms(8, 0), clock_ms(9, 15)], 1)
+
+    def test_one_minute_zero_seconds_is_bucket_member_only(self):
+        # :00 passes shape validation but is not proof of a completed candle.
+        result = self.decode([clock_ms(9, 15, 0)], 1)
+        self.assertEqual(str(result.datetime.iloc[0]), "2026-10-12 09:15:00")
+
+    def test_gap_is_not_synthesized(self):
+        result = self.decode([clock_ms(9, 15), clock_ms(9, 17)], 1)
+        self.assertEqual(len(result), 2)
+
+    def test_invalid_ohlc_rejected(self):
+        frame = rows([clock_ms(9, 15)])
+        frame.loc[0, 'high'] = 98
+        with self.assertRaisesRegex(ValueError, "Inconsistent"):
+            process_historical_chart_response(
+                frame, 1, datetime(2026, 10, 12, 9, 15),
+                datetime(2026, 10, 12, 10, 15),
+            )
+
+    def test_invalid_volume_rejected(self):
+        frame = rows([clock_ms(9, 15)])
+        frame.loc[0, 'volume'] = -1
+        with self.assertRaisesRegex(ValueError, "Invalid intraday"):
+            process_historical_chart_response(
+                frame, 1, datetime(2026, 10, 12, 9, 15),
+                datetime(2026, 10, 12, 10, 15),
+            )
+
     def test_unordered_provider_response_fails_closed(self):
         response = Mock()
         response.json.return_value = {"data": rows([
