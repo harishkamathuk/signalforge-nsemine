@@ -77,6 +77,17 @@ def git_revision():
         raise RuntimeError("Fork Git revision unavailable")
 
 
+def git_dirty():
+    root = Path(__file__).resolve().parents[1]
+    try:
+        return bool(subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root, text=True, stderr=subprocess.DEVNULL
+        ).strip())
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Fork worktree state unavailable") from exc
+
+
 def build_evidence(request, response, *, observed_at, fork_sha, policy_status):
     """Accept caller-supplied offline fixtures only; no implicit data acquisition."""
     if policy_status != "approved":
@@ -152,6 +163,7 @@ def main():
         print(json.dumps({"mode": "P0", "network": False, "fork_sha": git_revision(),
                           "python": sys.version.split()[0], "timezone": os.environ.get("TZ", "unset"),
                           "fork_path": str(Path(__file__).resolve().parents[1]),
+                          "tracked_worktree_dirty": git_dirty(),
                           "source_use": "UNVERIFIED: no provider requests authorized"},
                          indent=2))
     elif args.mode == "dry-run":
