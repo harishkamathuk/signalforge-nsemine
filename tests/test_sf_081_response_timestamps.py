@@ -14,10 +14,11 @@ def clock_ms(hour, minute, second=59):
 
 
 def rows(times):
-    return pd.DataFrame([
-        dict(time=t, open=100, high=102, low=99, close=101, volume=10)
-        for t in times
-    ])
+    return pd.DataFrame(
+        [dict(time=t, open=100, high=102, low=99, close=101, volume=10)
+         for t in times],
+        columns=["time", "open", "high", "low", "close", "volume"],
+    )
 
 
 class IntradayResponseTimestampTests(unittest.TestCase):
