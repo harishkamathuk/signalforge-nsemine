@@ -6,26 +6,61 @@ import hashlib
 import json
 import os
 import re
+from urllib.parse import urlsplit
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-SECRET_KEYS = re.compile(r"cookie|authorization|password|secret|token|api[_-]?key|session|credential|set-cookie", re.I)
+SECRET_KEYS = re.compile(r"cookie|authorization|password|secret|auth[_-]?token|api[_-]?key|session|credential|set-cookie", re.I)
+SAFE_PARAMS = {"interval", "timeInterval", "chartType", "fromDate", "toDate", "symbol", "symbolType", "provider_instrument_token"}
+SAFE_RESPONSE = {"status_code", "row_count"}
+SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_METHODS = {"GET", "POST"}
 EVIDENCE_VERSION = "sf079-offline-evidence-v1"
 
 
-def scrub(value):
-    """Conservatively redact sensitive keys at every depth; omit no evidence silently."""
-    if isinstance(value, dict):
-        return {str(k): ("[REDACTED]" if SECRET_KEYS.search(str(k)) else scrub(v))
-                for k, v in value.items()}
-    if isinstance(value, list):
-        return [scrub(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    raise TypeError("Evidence must contain JSON primitives only")
+def safe_request(request):
+    """Allowlist structural fields; never persist arbitrary headers, URLs or values."""
+    if set(request) - {"method", "endpoint", "parameters", "headers"}:
+        raise ValueError("Unknown request field")
+    endpoint = request.get("endpoint")
+    if not isinstance(endpoint, str):
+        raise ValueError("Endpoint must be a string")
+    parsed = urlsplit(endpoint)
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise ValueError("Endpoint credentials, query and fragment are not allowed")
+    if parsed.scheme not in {"https", "synthetic"} or not parsed.hostname:
+        raise ValueError("Unsupported endpoint URL")
+    params = request.get("parameters")
+    if not isinstance(params, dict) or not params or set(params) - SAFE_PARAMS:
+        raise ValueError("Unapproved request parameters")
+    safe = {}
+    for key, val in params.items():
+        if key in {"interval", "timeInterval", "fromDate", "toDate"}:
+            if type(val) is not int or val < 0:
+                raise ValueError("Numerical parameter must be nonnegative integer")
+        elif key in {"symbol", "symbolType", "chartType", "provider_instrument_token"}:
+            if not isinstance(val, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", val):
+                raise ValueError("Unsafe instrument/enum field")
+        safe[key] = val
+    # Headers are accepted only as an empty object; secrets must not be copied.
+    if request.get("headers", {}) != {}:
+        raise ValueError("Raw request headers cannot be retained")
+    return {"method": request["method"], "endpoint": endpoint, "parameters": safe}
+
+
+def safe_response(response):
+    """Metadata only; never accept raw HTTP payload or arbitrary free text."""
+    if set(response) - SAFE_RESPONSE:
+        raise ValueError("Raw response body or unapproved metadata cannot be retained")
+    status = response.get("status_code")
+    count = response.get("row_count", 0)
+    if type(status) is not int or not 100 <= status <= 599:
+        raise ValueError("Invalid HTTP status")
+    if type(count) is not int or count < 0:
+        raise ValueError("Invalid row count")
+    return {"status_code": status, "row_count": count}
 
 
 def canonical_bytes(obj):
@@ -36,10 +71,10 @@ def canonical_bytes(obj):
 def git_revision():
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True, stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
-        return "unavailable"
+        raise RuntimeError("Fork Git revision unavailable")
 
 
 def build_evidence(request, response, *, observed_at, fork_sha, policy_status):
@@ -48,10 +83,10 @@ def build_evidence(request, response, *, observed_at, fork_sha, policy_status):
         raise PermissionError("Source-use and local retention approval required before any real response capture")
     if request.get("method") not in ALLOWED_METHODS:
         raise ValueError("Invalid HTTP method")
-    if not request.get("endpoint") or not request.get("parameters"):
-        raise ValueError("Endpoint and transmitted parameters are required")
-    if not response.get("status_code") or "body" not in response:
-        raise ValueError("Response status_code and body are required")
+    if not isinstance(fork_sha, str) or not SHA_PATTERN.fullmatch(fork_sha):
+        raise ValueError("Fork revision must be a full 40-digit Git SHA")
+    request = safe_request(request)
+    response = safe_response(response)
     try:
         parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
         if parsed.tzinfo is None or parsed.utcoffset() is None:
@@ -63,14 +98,14 @@ def build_evidence(request, response, *, observed_at, fork_sha, policy_status):
         "schema": EVIDENCE_VERSION,
         "observed_at": observed_at,
         "implementation_revision": fork_sha,
-        "request": scrub(request),
-        "response": scrub(response),
+        "request": request,
+        "response": response,
         "limitations": ["Caller-provided offline snapshot; not a verified provider acquisition"],
     }
 
 
 def write_snapshot(root, evidence):
-    """One immutable directory per semantic digest; refuse changes to existing artifacts."""
+    """Create a tamper-evident snapshot; filesystem writes are not immutable."""
     data = canonical_bytes(evidence)
     digest = hashlib.sha256(data).hexdigest()
     target = root / digest
@@ -98,11 +133,12 @@ def write_snapshot(root, evidence):
 def verify_snapshot(path):
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     data = (path / "evidence.json").read_bytes()
-    assert manifest["schema"] == EVIDENCE_VERSION
-    assert manifest["evidence_file"] == "evidence.json"
-    assert hashlib.sha256(data).hexdigest() == manifest["evidence_sha256"]
-    assert path.name == manifest["evidence_sha256"]
-    assert canonical_bytes(json.loads(data)) == data
+    if (manifest.get("schema") != EVIDENCE_VERSION
+            or manifest.get("evidence_file") != "evidence.json"
+            or hashlib.sha256(data).hexdigest() != manifest.get("evidence_sha256")
+            or path.name != manifest.get("evidence_sha256")
+            or canonical_bytes(json.loads(data)) != data):
+        raise ValueError("Evidence snapshot integrity verification failed")
     return True
 
 
@@ -115,13 +151,13 @@ def main():
     if args.mode == "p0":
         print(json.dumps({"mode": "P0", "network": False, "fork_sha": git_revision(),
                           "python": sys.version.split()[0], "timezone": os.environ.get("TZ", "unset"),
+                          "fork_path": str(Path(__file__).resolve().parents[1]),
                           "source_use": "UNVERIFIED: no provider requests authorized"},
                          indent=2))
     elif args.mode == "dry-run":
         example = build_evidence(
-            {"method": "POST", "endpoint": "synthetic://example", "parameters": {"interval": 1},
-             "headers": {"Authorization": "fixture-secret"}},
-            {"status_code": 200, "body": {"rows": [], "token": "fixture-secret"}},
+            {"method": "POST", "endpoint": "synthetic://example", "parameters": {"interval": 1}},
+            {"status_code": 200, "row_count": 0},
             observed_at="2026-10-14T00:00:00Z", fork_sha=git_revision(), policy_status="approved",
         )
         target = write_snapshot(args.out, example)
