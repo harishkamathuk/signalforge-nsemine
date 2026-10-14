@@ -225,6 +225,8 @@ def process_historical_chart_response(df: pd.DataFrame, interval: str, start_dat
         overlaps_window = (openings < end) & (
             openings + pd.Timedelta(minutes=minutes) > start
         )
+        if (in_session & ~overlaps_window).any():
+            raise ValueError("Intraday candle outside requested date/time window")
         if not (in_session & overlaps_window).any():
             raise ValueError("No intraday candles overlap requested regular session")
         if (~in_session).any():
