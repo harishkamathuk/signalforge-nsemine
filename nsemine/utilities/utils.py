@@ -142,12 +142,29 @@ def remove_pre_and_post_market_prices_from_df(df: pd.DataFrame, unit: str = 'ms'
         raise e
 
 
-def _validated_intraday_open_labels(raw_times: pd.Series, minutes: int) -> pd.Series:
-    """Decode observed wall-clock-shaped NSE timestamps, failing on ambiguity.
+def _chart_bound_wall_time(value: datetime | int) -> pd.Timestamp:
+    """Decode a caller-local NSE datetime or an already encoded chart bound."""
+    if isinstance(value, bool):
+        raise ValueError("Invalid historical request bound")
+    if isinstance(value, int):
+        # historical.__fetch_historical_data passes wall-clock-encoded seconds.
+        return pd.Timestamp(value, unit='s', tz='UTC').tz_localize(None)
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is not None:
+        stamp = stamp.tz_convert('Asia/Kolkata').tz_localize(None)
+    if pd.isna(stamp):
+        raise ValueError("Invalid historical request bound")
+    return stamp
 
-    The source clock is NOT interpreted as a real UTC instant. For the validated
-    1m/5m formats, the provider timestamp is inside the final minute of its
-    candle, and the returned label is the candle's opening NSE wall time.
+
+def _validated_intraday_open_labels(
+    raw_times: pd.Series, minutes: int,
+    start_datetime: datetime | int, end_datetime: datetime | int,
+) -> pd.Series:
+    """Validate every provider timestamp before returning NSE-local opening labels.
+
+    Chart milliseconds are a provider wall-clock encoding, NOT UTC instants.
+    Bucket membership does not establish provider candle completion.
     """
     if minutes not in (1, 5):
         raise ValueError("Validated timestamp decoding supports only 1m and 5m")
@@ -161,18 +178,41 @@ def _validated_intraday_open_labels(raw_times: pd.Series, minutes: int) -> pd.Se
     if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
         raise ValueError("Duplicate or unordered raw intraday timestamps")
     opening = timestamps.dt.floor(f'{minutes}min')
-    if minutes == 5:
-        # NSE intraday candles start at 09:15, aligned to five-minute boundaries.
-        opening = timestamps.dt.floor('5min')
     final_minute = opening + pd.Timedelta(minutes=minutes - 1)
     if not (timestamps.dt.floor('min') == final_minute).all():
         raise ValueError("Intraday timestamp outside final candle minute")
     if opening.duplicated().any():
         raise ValueError("Duplicate intraday opening candle labels")
-    if not ((opening.dt.time >= datetime.strptime('09:15', '%H:%M').time()) &
-            (opening.dt.time < datetime.strptime('15:30', '%H:%M').time())).all():
-        raise ValueError("Intraday candle outside NSE regular session")
+    # This path serves a regular-session request. Do not silently discard
+    # records that are not inside the NSE session.
+    session_start = datetime.strptime('09:15', '%H:%M').time()
+    session_end = datetime.strptime('15:30', '%H:%M').time()
+    if not ((opening.dt.time >= session_start) &
+            ((opening + pd.Timedelta(minutes=minutes)).dt.time <= session_end)).all():
+        raise ValueError("Unexpected out-of-session intraday candle")
+    request_start = _chart_bound_wall_time(start_datetime)
+    request_end = _chart_bound_wall_time(end_datetime)
+    if request_end <= request_start:
+        raise ValueError("Invalid historical request window")
+    if not ((opening >= request_start) &
+            (opening + pd.Timedelta(minutes=minutes) <= request_end)).all():
+        raise ValueError("Intraday candle outside requested date/time window")
     return opening
+
+
+def _validate_intraday_ohlcv(df: pd.DataFrame) -> None:
+    """Reject impossible candle values; this does not prove source accuracy."""
+    numeric = df[['open', 'high', 'low', 'close', 'volume']].apply(
+        pd.to_numeric, errors='raise'
+    )
+    if numeric.isna().any().any() or not np.isfinite(numeric.to_numpy(dtype=float)).all():
+        raise ValueError("Missing or non-finite intraday OHLCV")
+    prices = numeric[['open', 'high', 'low', 'close']]
+    if (prices <= 0).any().any() or (numeric['volume'] < 0).any():
+        raise ValueError("Invalid intraday price or volume")
+    if ((numeric['high'] < prices[['open', 'close', 'low']].max(axis=1)) |
+            (numeric['low'] > prices[['open', 'close', 'high']].min(axis=1))).any():
+        raise ValueError("Inconsistent intraday OHLC")
 
 
 def process_historical_chart_response(df: pd.DataFrame, interval: str, start_datetime: datetime, end_datetime: datetime) -> pd.DataFrame:
@@ -183,14 +223,11 @@ def process_historical_chart_response(df: pd.DataFrame, interval: str, start_dat
         return df
 
     if str(interval) in ('1', '5'):
-        if df.empty or df['datetime'].isna().any():
-            raise ValueError('Missing intraday timestamps')
-        # This is a consciously bounded contract: other intervals have not
-        # been source-qualified and retain the pre-existing conversion.
-        df = remove_pre_and_post_market_prices_from_df(df=df)
+        # Validate all response rows BEFORE any session filtering.
         df['datetime'] = _validated_intraday_open_labels(
-            df['datetime'], int(interval)
+            df['datetime'], int(interval), start_datetime, end_datetime
         )
+        _validate_intraday_ohlcv(df)
         return df
 
     # Existing behaviour for unqualified intervals; do not silently invent
