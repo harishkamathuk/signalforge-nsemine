@@ -142,34 +142,67 @@ def remove_pre_and_post_market_prices_from_df(df: pd.DataFrame, unit: str = 'ms'
         raise e
 
 
+def _validated_intraday_open_labels(raw_times: pd.Series, minutes: int) -> pd.Series:
+    """Decode observed wall-clock-shaped NSE timestamps, failing on ambiguity.
+
+    The source clock is NOT interpreted as a real UTC instant. For the validated
+    1m/5m formats, the provider timestamp is inside the final minute of its
+    candle, and the returned label is the candle's opening NSE wall time.
+    """
+    if minutes not in (1, 5):
+        raise ValueError("Validated timestamp decoding supports only 1m and 5m")
+    if raw_times.empty or raw_times.isna().any():
+        raise ValueError("Missing intraday timestamps")
+    if not pd.api.types.is_integer_dtype(raw_times.dtype):
+        raise ValueError("Intraday timestamps must be integer milliseconds")
+    if (raw_times < 0).any() or (raw_times % 1000 != 0).any():
+        raise ValueError("Unexpected intraday timestamp precision")
+    timestamps = pd.to_datetime(raw_times, unit='ms', errors='raise')
+    if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
+        raise ValueError("Duplicate or unordered raw intraday timestamps")
+    opening = timestamps.dt.floor(f'{minutes}min')
+    if minutes == 5:
+        # NSE intraday candles start at 09:15, aligned to five-minute boundaries.
+        opening = timestamps.dt.floor('5min')
+    final_minute = opening + pd.Timedelta(minutes=minutes - 1)
+    if not (timestamps.dt.floor('min') == final_minute).all():
+        raise ValueError("Intraday timestamp outside final candle minute")
+    if opening.duplicated().any():
+        raise ValueError("Duplicate intraday opening candle labels")
+    if not ((opening.dt.time >= datetime.strptime('09:15', '%H:%M').time()) &
+            (opening.dt.time < datetime.strptime('15:30', '%H:%M').time())).all():
+        raise ValueError("Intraday candle outside NSE regular session")
+    return opening
+
+
 def process_historical_chart_response(df: pd.DataFrame, interval: str, start_datetime: datetime, end_datetime: datetime) -> pd.DataFrame:
-    try:
-        df = df[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
-        
-        df.rename(columns={'time': 'datetime'}, inplace=True)
-        
-        if interval in ('D', 'W', 'M'):
-            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-            return df
-
-        df = remove_pre_and_post_market_prices_from_df(df=df.copy())
-        try:
-            minutes = int(interval) if str(interval) == '1' else 5
-            time_offset_seconds = (minutes - 1) * 60 + 59
-        except Exception:
-            time_offset_seconds = 0
-
-        df['datetime'] = df['datetime'] - time_offset_seconds * 1000
+    df = df[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
+    df.rename(columns={'time': 'datetime'}, inplace=True)
+    if interval in ('D', 'W', 'M'):
         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df['datetime'] = df['datetime'].apply(
-            lambda dt: dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
-            if dt.second > 1 else dt.replace(second=0, microsecond=0)
+        return df
+
+    if str(interval) in ('1', '5'):
+        # This is a consciously bounded contract: other intervals have not
+        # been source-qualified and retain the pre-existing conversion.
+        df = remove_pre_and_post_market_prices_from_df(df=df)
+        df['datetime'] = _validated_intraday_open_labels(
+            df['datetime'], int(interval)
         )
         return df
-    except Exception as e:
-        print('Exception in process_historical_chart_response', e)
-        traceback.print_exc()
-        return None
+
+    # Existing behaviour for unqualified intervals; do not silently invent
+    # a provider timestamp specification under SF-081.
+    df = remove_pre_and_post_market_prices_from_df(df=df)
+    minutes = 5
+    time_offset_seconds = (minutes - 1) * 60 + 59
+    df['datetime'] -= time_offset_seconds * 1000
+    df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+    df['datetime'] = df['datetime'].apply(
+        lambda dt: dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        if dt.second > 1 else dt.replace(second=0, microsecond=0)
+    )
+    return df
 
 
 
