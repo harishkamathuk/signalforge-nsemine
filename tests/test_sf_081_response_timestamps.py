@@ -83,7 +83,11 @@ class IntradayResponseTimestampTests(unittest.TestCase):
 
     def test_before_requested_start_rejected(self):
         with self.assertRaisesRegex(ValueError, "requested date/time"):
-            self.decode([clock_ms(9, 14), clock_ms(9, 15)], 1)
+            process_historical_chart_response(
+                rows([clock_ms(9, 19), clock_ms(9, 20)]), 1,
+                datetime(2026, 10, 12, 9, 20),
+                datetime(2026, 10, 12, 10, 15),
+            )
 
     def test_at_or_after_requested_end_rejected(self):
         with self.assertRaisesRegex(ValueError, "requested date/time"):
