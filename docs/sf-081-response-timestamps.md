@@ -36,13 +36,27 @@ an authoritative NSE specification, nor an SF-079 Gate A SELECT.
 - For these two intervals, processing rejects missing/non-integer
   millisecond timestamps, unexpected subsecond precision,
   duplicate or unordered raw timestamps, duplicate opening labels,
-  and timestamps outside the candle's final minute. A failure
+  and timestamps outside the candle's final minute. It also rejects
+  candles outside the explicitly requested date/time bounds: opening
+  at or after the requested start, entire interval completed by the
+  exclusive requested end. The legacy chart wire bounds are decoded
+  as NSE wall-clock-shaped seconds; aware caller bounds are interpreted
+  in Asia/Kolkata. Partial end buckets are not accepted. A failure
   propagates from the timestamp decoder; the legacy public
   historical fetch wrapper returns `None` and does not yield
   a corrupted DataFrame.
-- The existing filtering of pre/post-market data remains in place,
-  and an empty in-session result is rejected by the decoder.
-- Missing intervals are **not** synthesized, nor are arbitrary
+- For these validated 1m/5m regular-session calls, all response rows
+  are validated **before any filtering**. Unexpected pre/post-market
+  records cause explicit failure rather than silently disappearing.
+  Other intervals retain legacy filtering. The API's outer historical
+  wrapper still returns None after reporting a processing failure.
+- Basic OHLCV plausibility is checked (finite positive prices, nonnegative
+  volume, high/low contain open/close). This is not independent source
+  verification or a replacement for SF-079 missing/correction policies.
+- Timestamps merely inside the final minute are accepted, including :00.
+  This is **bucket alignment only**: it does not prove a candle is completed.
+  Completed-candle admission must be independently enforced downstream.
+- Missing intervals are **not** synthesized or rejected here, nor are arbitrary
   historical windows required to contain every minute. The
   SignalForge adapter/source qualification owns missing-bar policy.
 
