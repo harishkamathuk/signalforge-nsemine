@@ -3,7 +3,9 @@ import logging
 import random
 import time
 import threading
+import os
 from curl_cffi import requests
+import requests as standard_requests
 from nsemine.utilities import urls
 from nsemine.bin import auth, header 
 
@@ -16,6 +18,8 @@ MAX_RETRIES = 3
 DEFAULT_IMPERSONATE = "chrome133a"
 HTTP_VERSION = "v1"
 SESSION_MAX_AGE_MINUTES = 60
+# Explicit opt-in for environments where curl_cffi fails TLS negotiation.
+SYNC_HTTP_TRANSPORT_ENV = "NSEMINE_SYNC_HTTP_TRANSPORT"
 MAX_BACKOFF_SECONDS = 8.0
 MAX_SERVER_BACKOFF_SECONDS = 30.0
 
@@ -42,7 +46,15 @@ def _close_sync_session(session: requests.Session | None) -> None:
         LOGGER.debug("Failed to close NSE sync session", exc_info=True)
 
 
-def _get_sync_session(force_new: bool = False) -> requests.Session:
+def _sync_transport_backend() -> str:
+    """Select the synchronous transport; never silently downgrade TLS verification."""
+    backend = os.environ.get(SYNC_HTTP_TRANSPORT_ENV, "curl_cffi").strip().lower()
+    if backend not in ("curl_cffi", "requests"):
+        raise ValueError(f"Unsupported {SYNC_HTTP_TRANSPORT_ENV} value: {backend!r}")
+    return backend
+
+
+def _get_sync_session(force_new: bool = False):
     """
     Return a session private to the current worker thread.
 
@@ -52,7 +64,13 @@ def _get_sync_session(force_new: bool = False) -> requests.Session:
     """
     global SESSION
 
+    backend = _sync_transport_backend()
     session = getattr(_SESSION_LOCAL, "session", None)
+    if session is not None and getattr(_SESSION_LOCAL, "backend", None) != backend:
+        _close_sync_session(session)
+        session = None
+        _SESSION_LOCAL.session = None
+        _SESSION_LOCAL.seeded = False
     if force_new and session is not None:
         _close_sync_session(session)
         session = None
@@ -60,10 +78,15 @@ def _get_sync_session(force_new: bool = False) -> requests.Session:
         _SESSION_LOCAL.seeded = False
 
     if session is None:
-        session = requests.Session(
-            impersonate=DEFAULT_IMPERSONATE,
-            http_version=HTTP_VERSION,
-        )
+        if backend == "requests":
+            session = standard_requests.Session()
+            session.verify = True
+        else:
+            session = requests.Session(
+                impersonate=DEFAULT_IMPERSONATE,
+                http_version=HTTP_VERSION,
+            )
+        _SESSION_LOCAL.backend = backend
         _SESSION_LOCAL.session = session
         _SESSION_LOCAL.seeded = False
 
@@ -333,7 +356,6 @@ def get_request(
         for retry_index in range(MAX_RETRIES):
             response = None
             try:
-                print(headers)
                 response = session.get(
                     url=url,
                     headers=headers,
