@@ -15,6 +15,12 @@ from pathlib import Path
 SECRET_KEYS = re.compile(r"cookie|authorization|password|secret|auth[_-]?token|api[_-]?key|session|credential|set-cookie", re.I)
 SAFE_PARAMS = {"interval", "timeInterval", "chartType", "fromDate", "toDate", "symbol", "symbolType", "provider_instrument_token"}
 SAFE_RESPONSE = {"status_code", "row_count"}
+SAFE_ENDPOINTS = {
+    "https://charting.nseindia.com/v1/charts/symbolHistoricalData",
+    "https://charting.nseindia.com/v1/exchanges/symbolsDynamic",
+    "synthetic://history",
+    "synthetic://example",
+}
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_METHODS = {"GET", "POST"}
 EVIDENCE_VERSION = "sf079-offline-evidence-v1"
@@ -30,8 +36,8 @@ def safe_request(request):
     parsed = urlsplit(endpoint)
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ValueError("Endpoint credentials, query and fragment are not allowed")
-    if parsed.scheme not in {"https", "synthetic"} or not parsed.hostname:
-        raise ValueError("Unsupported endpoint URL")
+    if endpoint not in SAFE_ENDPOINTS:
+        raise ValueError("Endpoint not in qualification allowlist")
     params = request.get("parameters")
     if not isinstance(params, dict) or not params or set(params) - SAFE_PARAMS:
         raise ValueError("Unapproved request parameters")
