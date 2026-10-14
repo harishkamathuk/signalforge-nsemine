@@ -53,7 +53,10 @@ def build_evidence(request, response, *, observed_at, fork_sha, policy_status):
     if not response.get("status_code") or "body" not in response:
         raise ValueError("Response status_code and body are required")
     try:
-        datetime.fromisoformat(observed_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        parsed.astimezone(timezone.utc)
     except ValueError as exc:
         raise ValueError("observed_at must be ISO8601") from exc
     return {
@@ -77,6 +80,7 @@ def write_snapshot(root, evidence):
     except FileExistsError:
         if not (target / "evidence.json").exists() or (target / "evidence.json").read_bytes() != data:
             raise FileExistsError("Existing evidence snapshot differs or is incomplete")
+        verify_snapshot(target)
         return target
     try:
         with (target / "evidence.json").open("xb") as fh:
