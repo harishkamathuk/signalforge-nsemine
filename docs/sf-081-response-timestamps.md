@@ -36,22 +36,28 @@ an authoritative NSE specification, nor an SF-079 Gate A SELECT.
 - For these two intervals, processing rejects missing/non-integer
   millisecond timestamps, unexpected subsecond precision,
   duplicate or unordered raw timestamps, duplicate opening labels,
-  and timestamps outside the candle's final minute. It also rejects
-  candles outside the explicitly requested date/time bounds: opening
-  at or after the requested start, entire interval completed by the
-  exclusive requested end. The legacy chart wire bounds are decoded
+  and timestamps outside the candle's final minute. It rejects
+  unrelated in-session dates and times. Complete candles are returned
+  only if their opening is at or after the requested start and their
+  end is no later than the exclusive requested end. Partial edge
+  buckets are deliberately trimmed with a RuntimeWarning and count. The legacy chart wire bounds are decoded
   as NSE wall-clock-shaped seconds; aware caller bounds are interpreted
-  in Asia/Kolkata. Partial end buckets are not accepted. A failure
+  in Asia/Kolkata. If no complete bucket remains, the request fails. A failure
   propagates from the timestamp decoder; the legacy public
   historical fetch wrapper returns `None` and does not yield
   a corrupted DataFrame.
-- For these validated 1m/5m regular-session calls, all response rows
-  are validated **before any filtering**. Unexpected pre/post-market
-  records cause explicit failure rather than silently disappearing.
-  Other intervals retain legacy filtering. The API's outer historical
+- For these validated 1m/5m calls, raw timestamp shape/order are
+  validated **before any filtering**. Legitimate pre/post-market rows
+  retain the legacy exclusion policy, but generate an explicit
+  RuntimeWarning with the excluded count. If there is no eligible
+  requested-session candle, the call fails. A wholly shifted clock
+  or unrelated in-session date/window is rejected. Other intervals
+  retain legacy filtering. The API's outer historical
   wrapper still returns None after reporting a processing failure.
 - Basic OHLCV plausibility is checked (finite positive prices, nonnegative
-  volume, high/low contain open/close). This is not independent source
+  integral volume, high/low contain open/close). Input OHLCV types are
+  validated with numeric coercion but returned unchanged for compatibility;
+  callers should not assume the parser normalizes numeric strings. This is not independent source
   verification or a replacement for SF-079 missing/correction policies.
 - Timestamps merely inside the final minute are accepted, including :00.
   This is **bucket alignment only**: it does not prove a candle is completed.
@@ -67,7 +73,8 @@ unchanged; do not generalize this contract to them.
 ## Reproduction and limitations
 
 Offline tests synthesize observed raw timestamp patterns and corrupt
-cases without redistributing provider market data:
+cases, including 60×1m / 12×5m full-hour mocked chart acquisitions,
+without redistributing provider market data:
 
 `python -m unittest discover -s tests -p 'test_sf_081_*.py' -v`
 
