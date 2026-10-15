@@ -28,6 +28,78 @@ def _intraday_chart_epoch(value: datetime) -> int:
 
 
 
+
+def search_stock_instruments(
+    stock_symbol: str,
+    segment: str | None = None,
+    scrip_type: str | None = None,
+) -> list[dict]:
+    """Return provider instrument-search candidates without normalizing identity fields.
+
+    This evidence-oriented API intentionally preserves the provider's original
+    candidate dictionaries so callers can apply their own fail-closed identity
+    policy. It does not select a candidate.
+    """
+    if not isinstance(stock_symbol, str) or not stock_symbol.strip():
+        raise ValueError("stock_symbol must be a non-empty string")
+
+    symbol = stock_symbol.upper()
+    segment_set = {"EQ", "FO", "IDX"}
+    if segment is not None and segment not in segment_set:
+        raise ValueError("segment must be one of EQ, FO, IDX")
+
+    params = {
+        "segment": segment or "",
+        "symbol": symbol,
+    }
+    resp = scraper.get_request(url=urls.search_token_url, params=params)
+    payload = resp.json()
+    raw_candidates = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(raw_candidates, list):
+        raise ValueError("provider instrument search returned no candidate list")
+
+    candidates = [dict(candidate) for candidate in raw_candidates if isinstance(candidate, dict)]
+    if scrip_type is not None:
+        if scrip_type not in {"Equity", "Index", "Futures", "Options"}:
+            raise ValueError("unsupported scrip_type")
+        candidates = [candidate for candidate in candidates if candidate.get("type") == scrip_type]
+    return candidates
+
+
+def get_stock_historical_data_by_instrument(
+    symbol: str,
+    token: str,
+    symbol_type: str,
+    start_datetime: datetime,
+    end_datetime: datetime = datetime.now(),
+    interval: int | str = "D",
+    raw: bool = False,
+) -> pd.DataFrame | dict | None:
+    """Fetch history using an explicitly supplied provider instrument identity.
+
+    Unlike get_stock_historical_data(), this function performs no symbol/token
+    lookup. The supplied token is passed directly to the historical chart
+    request, allowing an external caller to validate identity once and prove
+    which token was used for acquisition.
+    """
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("symbol must be a non-empty string")
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError("token must be a non-empty string")
+    if not isinstance(symbol_type, str) or not symbol_type.strip():
+        raise ValueError("symbol_type must be a non-empty string")
+
+    return __fetch_historical_data(
+        symbol=symbol,
+        token=token,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        interval=interval,
+        symbol_type=symbol_type,
+        raw=raw,
+    )
+
+
 def get_stock_historical_data(stock_symbol: str, 
                             start_datetime: datetime, 
                             end_datetime: datetime = datetime.now(), 
