@@ -54,6 +54,23 @@ class InstrumentIdentityApiTests(TestCase):
             params={"segment": "EQ", "symbol": "TCS"},
         )
 
+
+    def test_search_rejects_mixed_malformed_candidates(self):
+        payload = {
+            "data": [
+                {
+                    "symbol": "TCS-EQ",
+                    "scripcode": "11536",
+                    "type": "Equity",
+                },
+                "malformed-candidate",
+            ]
+        }
+
+        with patch.object(historical.scraper, "get_request", return_value=_Response(payload)):
+            with self.assertRaisesRegex(ValueError, "malformed candidate"):
+                historical.search_stock_instruments("TCS", segment="EQ")
+
     def test_direct_historical_fetch_uses_supplied_token_without_resolution(self):
         raw_payload = {"data": [{"time": 1, "open": 1, "high": 1, "low": 1, "close": 1}]}
 
