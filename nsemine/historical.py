@@ -58,7 +58,9 @@ def search_stock_instruments(
     if not isinstance(raw_candidates, list):
         raise ValueError("provider instrument search returned no candidate list")
 
-    candidates = [dict(candidate) for candidate in raw_candidates if isinstance(candidate, dict)]
+    if any(not isinstance(candidate, dict) for candidate in raw_candidates):
+        raise ValueError("provider instrument search returned a malformed candidate entry")
+    candidates = [dict(candidate) for candidate in raw_candidates]
     if scrip_type is not None:
         if scrip_type not in {"Equity", "Index", "Futures", "Options"}:
             raise ValueError("unsupported scrip_type")
